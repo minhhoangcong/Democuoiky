@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FlexTransfer Hub</title>
+  <link href="style.css" rel="stylesheet" />
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>FlexTransfer Hub</h1>
+      <p>Professional multi-file transfer manager with advanced controls</p>
+    </header>
+
+    <section class="status-cards" aria-label="Transfer status summary">
+      <div class="card" data-type="active">
+        <div class="icon-wrapper icon-active">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+          </svg>
+        </div>
+        <div class="card-text">
+          <span>Active Transfers</span>
+          <span><b>0</b></span>
+        </div>
+      </div>
+      
+      <div class="card" data-type="completed">
+        <div class="icon-wrapper icon-completed">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+          </svg>
+        </div>
+        <div class="card-text">
+          <span>Completed</span>
+          <span><b>0</b></span>
+        </div>
+      </div>
+      
+      <div class="card" data-type="total-files">
+        <div class="icon-wrapper icon-total-files">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/>
+          </svg>
+        </div>
+        <div class="card-text">
+          <span>Total Files</span>
+          <span><b>0</b></span>
+        </div>
+      </div>
+      
+      <div class="card" data-type="total-speed">
+        <div class="icon-wrapper icon-total-speed">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M13 2.05v3.03c3.39.49 6 3.39 6 6.92 0 .9-.18 1.75-.5 2.54l2.6 1.53c.56-1.24.9-2.62.9-4.07 0-5.18-3.95-9.45-9-9.95zM12 19c-3.87 0-7-3.13-7-7 0-3.53 2.61-6.43 6-6.92V2.05c-5.06.5-9 4.76-9 9.95 0 5.52 4.47 10 9.99 10 3.31 0 6.24-1.61 8.06-4.09l-2.6-1.53C16.17 17.98 14.21 19 12 19z"/>
+          </svg>
+        </div>
+        <div class="card-text">
+          <span>Total Speed</span>
+          <span>0 KB/s</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="upload-section" aria-label="File upload and download input">
+      <label for="file-dropzone" class="dropzone" tabindex="0" aria-describedby="dropzone-info">
+        <span class="icon" aria-hidden="true">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/>
+          </svg>
+        </span>
+        <p><strong>Drop files here to upload</strong></p>
+        <p>or <a href="#" id="browse-files-link">browse files</a></p>
+        <small id="dropzone-info">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/>
+          </svg>
+          Supports all file types
+        </small>
+        <input type="file" id="file-dropzone" multiple style="display:none" />
+      </label>
+
+      <form class="add-url-section" onsubmit="event.preventDefault()" aria-labelledby="add-url-label">
+        <div class="add-url-header" id="add-url-label">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 2C4.48 2 2 4.48 2 12s2.48 10 10 10 10-2.48 10-10S19.52 2 12 2zm-1 17.93c-3.94-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/>
+          </svg>
+          <span>Add Download URL</span>
+        </div>
+        <div class="url-input-group">
+          <input
+            type="text"
+            id="download-url"
+            name="download-url"
+            placeholder="https://example.com/file.zip"
+            aria-label="Enter direct download URL"
+            spellcheck="false"
+          />
+          <button id="add-url-btn" aria-label="Add download URL" type="submit">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
+            </svg>
+            Add
+          </button>
+        </div>
+        <small class="add-url-instruction">
+          Enter a direct download URL to add it to the queue
+        </small>
+      </form>
+    </section>
+
+    <nav class="tabs-wrapper" role="tablist" aria-label="Transfer type tabs">
+      <button class="tab active" role="tab" aria-selected="true" tabindex="0" id="tab-all" aria-controls="panel-all">All Transfers</button>
+      <button class="tab" role="tab" aria-selected="false" tabindex="-1" id="tab-uploads" aria-controls="panel-uploads">Uploads</button>
+      <button class="tab" role="tab" aria-selected="false" tabindex="-1" id="tab-downloads" aria-controls="panel-downloads">Downloads</button>
+    </nav>
+
+    <section aria-live="polite" aria-atomic="true" class="no-transfers">
+      No transfers yet
+    </section>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
