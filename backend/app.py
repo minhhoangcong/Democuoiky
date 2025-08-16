@@ -51,10 +51,14 @@ async def run_both(host: str, port: int, ws_url: str, file_paths: list, file_id:
     logger.info("Starting both server and client mode")
     server_task = asyncio.create_task(run_server(host, port))
     try:
-        # Chờ server khởi động
-        logger.debug("Waiting for server to start...")
-        await asyncio.sleep(0.3)
-        await run_client(ws_url, file_paths, file_id, chunk, interactive)
+        for i in range(20):  # ~2s
+            try:
+                await run_client(ws_url, file_paths, file_id, chunk, interactive)
+                break
+            except OSError:
+                await asyncio.sleep(0.1)
+        else:
+            logger.error("Server not ready after waiting")
     finally:
         logger.info("Stopping server...")
         server_task.cancel()

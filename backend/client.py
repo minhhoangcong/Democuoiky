@@ -159,6 +159,11 @@ class AsyncUploader:
                 await self._pause_event.wait()
                 if self.state.is_stopped:
                     break
+                
+                cur = f.tell()
+                if self.state.offset != cur:
+                    logger.debug("Resync file pointer: tell=%d -> offset=%d", cur, self.state.offset)
+                    f.seek(self.state.offset)
 
                 chunk = f.read(self.chunk_size)
                 if not chunk:

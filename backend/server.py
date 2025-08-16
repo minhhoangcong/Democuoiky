@@ -178,7 +178,7 @@ class UploadManager:
             with open(part_path, "ab") as f:
                 f.write(data)
                 f.flush()
-                os.fsync(f.fileno())
+               
             session.bytes_received += len(data)
 
         percent = min(100.0 * session.bytes_received / max(session.file_size, 1), 100.0)
