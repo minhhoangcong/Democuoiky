@@ -5,7 +5,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Optional
-
+import hashlib
 import websockets
 from websockets.server import WebSocketServerProtocol
 from logger import setup_logger
@@ -22,10 +22,13 @@ class UploadSession:
     file_id: str
     file_name: str
     file_size: int
-    status: str = "active"  # active | paused | completed | stopped | error
+    status: str = "active"
     bytes_received: int = 0
     file_path: Path = field(default_factory=Path)
     file_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # NEW:
+    expected_sha256: Optional[str] = None
+    hasher: hashlib.sha256 = field(default_factory=hashlib.sha256, repr=False)
 
     def part_path(self) -> Path:
         return self.file_path.with_suffix(self.file_path.suffix + ".part")
@@ -109,6 +112,7 @@ class UploadManager:
             return
 
         session = self.get_or_create_session(file_id, file_name, file_size)
+        session.expected_sha256 = payload.get("sha256")
         session.status = "active"
 
         # Track this session under the current connection
@@ -165,6 +169,7 @@ class UploadManager:
 
         try:
             data = base64.b64decode(data_b64)
+            session.hasher.update(data)
         except Exception as e:
             logger.error("Failed to decode base64 data for %s: %s", file_id, e)
             await self.send_error(ws, file_id, "Invalid base64 data")
@@ -281,12 +286,20 @@ class UploadManager:
                 part_path.rename(final_path)
                 session.status = "completed"
                 logger.info("Upload completed: %s (%s) -> %s", 
-                           file_id, session.file_name, final_path.name)
-                
+                        file_id, session.file_name, final_path.name)
+                digest = session.hasher.hexdigest()
+                if session.expected_sha256 and session.expected_sha256.lower() != digest.lower():
+                    session.status = "error"
+                    logger.error("Checksum mismatch for %s: expected=%s actual=%s",
+                                file_id, session.expected_sha256, digest)
+                    await self.send_error(ws, file_id,
+                                        f"Checksum mismatch: expected={session.expected_sha256}, actual={digest}")
+                    return
                 await self.send(ws, {
-                    "event": "complete-ack",
-                    "fileId": file_id,
-                    "filePath": str(final_path.resolve()),
+                "event": "complete-ack",
+                "fileId": file_id,
+                "filePath": str(final_path.resolve()),
+                "sha256": digest,  # NEW
                 })
             except Exception as exc:
                 session.status = "error"

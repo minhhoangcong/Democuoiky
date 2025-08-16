@@ -10,20 +10,77 @@ import websockets
 import server as server_mod
 from client import AsyncUploader
 from logger import setup_logger
+# app.py
+from aiohttp import web
+from pathlib import Path
+from server import UPLOADS_DIR  # tái dùng thư mục uploads
+
+async def http_head(request):
+    name = request.match_info['name']
+    p = (UPLOADS_DIR / name)
+    if not p.exists():
+        return web.Response(status=404)
+    resp = web.Response(status=200)
+    resp.content_length = p.stat().st_size
+    resp.headers['Accept-Ranges'] = 'bytes'
+    return resp
+
+async def http_get(request):
+    name = request.match_info['name']
+    p = (UPLOADS_DIR / name)
+    if not p.exists():
+        return web.Response(status=404)
+
+    size = p.stat().st_size
+    rng = request.headers.get('Range')
+    start, end = 0, size - 1
+    status = 200
+    headers = {'Accept-Ranges': 'bytes', 'Content-Type': 'application/octet-stream'}
+
+    if rng and rng.startswith('bytes='):
+        a, b = rng[6:].split('-', 1)
+        if a: start = int(a)
+        if b: end = int(b) if b else end
+        status = 206
+        headers['Content-Range'] = f'bytes {start}-{end}/{size}'
+
+    resp = web.StreamResponse(status=status, headers=headers)
+    await resp.prepare(request)
+
+    chunk_size = 64 * 1024
+    with open(p, 'rb') as f:
+        f.seek(start)
+        remain = end - start + 1
+        while remain > 0:
+            data = f.read(min(chunk_size, remain))
+            if not data:
+                break
+            await resp.write(data)
+            remain -= len(data)
+
+    await resp.write_eof()
+    return resp
+
+async def run_http(host: str, port: int):
+    app = web.Application()
+    app.router.add_head('/files/{name}', http_head)
+    app.router.add_get('/files/{name}', http_get)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, host, port)
+    await site.start()
 
 # Thiết lập logger cho app
 logger = setup_logger("app")
 
 async def run_server(host: str, port: int):
+    http_task = asyncio.create_task(run_http(host, port + 1))
     async with websockets.serve(
-        server_mod.handler,
-        host,
-        port,
-        origins=None,
-        max_size=8 * 1024 * 1024,
+        server_mod.handler, host, port, origins=None, max_size=8 * 1024 * 1024
     ):
-        logger.info("Server listening on ws://%s:%d/ws", host, port)
+        logger.info("Server listening on ws://%s:%d/ws and http://%s:%d/files/<name>", host, port, host, port+1)
         await asyncio.Future()  # run forever
+
 
 
 async def run_client(ws_url: str, file_paths: list, file_id: str | None, chunk: int, interactive: bool):

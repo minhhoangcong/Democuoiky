@@ -484,12 +484,118 @@ class FlexTransferHub {
 
     this.transfers.push(transfer);
     // Keep simulated for downloads
-    this.simulateTransfer(transfer);
+    this.startHttpDownload(transfer);
 
     urlInput.value = "";
     this.updateStatusCards();
     this.renderTransfers();
     this.showNotification("Download added to queue", "success");
+  }
+  async startHttpDownload(transfer) {
+    transfer.type = "download";
+    transfer.status = "pending";
+    transfer.progress = 0;
+    transfer.speed = "0 KB/s";
+    transfer.bytesReceived = transfer.bytesReceived || 0;
+    transfer.chunks = transfer.chunks || [];
+    transfer.lastTickBytes = transfer.bytesReceived;
+    transfer.lastTickAt = performance.now();
+
+    // HEAD để lấy size
+    const head = await fetch(transfer.url, { method: "HEAD" });
+    if (!head.ok) {
+      this.showNotification("Cannot fetch file info (HEAD)", "error");
+      transfer.status = "error";
+      this.renderTransfers();
+      return;
+    }
+    const len = head.headers.get("content-length");
+    transfer.size = len ? parseInt(len, 10) : 0;
+
+    // Bắt đầu stream
+    await this.streamHttp(transfer);
+  }
+
+  async streamHttp(transfer) {
+    if (transfer.status === "stopped") return;
+
+    transfer.status = "active";
+    // Tạo AbortController để Pause/Stop
+    transfer.controller = new AbortController();
+    const headers = {};
+    if (transfer.bytesReceived > 0) {
+      headers["Range"] = `bytes=${transfer.bytesReceived}-`;
+    }
+
+    let resp;
+    try {
+      resp = await fetch(transfer.url, {
+        headers,
+        signal: transfer.controller.signal,
+      });
+    } catch (e) {
+      if (transfer.status !== "paused" && transfer.status !== "stopped") {
+        this.showNotification("Network error while downloading", "error");
+        transfer.status = "error";
+        this.renderTransfers();
+      }
+      return;
+    }
+
+    if (!(resp.ok || resp.status === 206)) {
+      this.showNotification(`HTTP ${resp.status} for GET`, "error");
+      transfer.status = "error";
+      this.renderTransfers();
+      return;
+    }
+
+    const reader = resp.body.getReader();
+    const pump = async () => {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        // Lưu chunk (demo: giữ RAM; muốn bền hơn có thể ghi IndexedDB)
+        transfer.chunks.push(value);
+        transfer.bytesReceived += value.length;
+
+        // Cập nhật progress/speed
+        transfer.progress = transfer.size
+          ? Math.min(100, (transfer.bytesReceived / transfer.size) * 100)
+          : 0;
+        transfer.speed = this.formatSpeed(
+          this.computeInstantSpeed(transfer, value.length)
+        );
+        this.throttledRender();
+
+        if (transfer.status !== "active") {
+          // bị pause/stop giữa chừng
+          try {
+            transfer.controller.abort();
+          } catch {}
+          return;
+        }
+      }
+
+      // Hoàn tất
+      transfer.progress = 100;
+      transfer.status = "completed";
+      transfer.speed = "0 KB/s";
+
+      // Gộp các chunk -> blob -> tải về
+      const blob = new Blob(transfer.chunks);
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = transfer.name || "download";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(a.href);
+
+      this.updateStatusCards();
+      this.renderTransfers();
+    };
+
+    await pump();
   }
 
   simulateTransfer(transfer) {
@@ -781,11 +887,12 @@ class FlexTransferHub {
         this.startUpload(transfer);
       }
     } else {
-      // download giả lập
+      // download thật
       if (transfer.status === "pending" || transfer.status === "error") {
-        this.simulateTransfer(transfer);
+        this.startHttpDownload(transfer);
       }
     }
+
     this.renderTransfers();
   }
 
@@ -797,11 +904,17 @@ class FlexTransferHub {
         this.maybeStartNextUploads();
       }
     } else {
-      // For downloads (simulated)
+      // For downloads (real)
       if (transfer.status === "active") {
         transfer.status = "paused";
+        if (transfer.controller) {
+          try {
+            transfer.controller.abort();
+          } catch {}
+        }
       }
     }
+
     this.renderTransfers();
   }
 
@@ -824,13 +937,11 @@ class FlexTransferHub {
         this.startTransfer(transfer);
       }
     } else {
-      // For downloads (simulated)
-      if (transfer.status === "paused") {
-        transfer.status = "active";
-        this.simulateTransfer(transfer);
+      // For downloads (real)
+      if (transfer.status === "paused" || transfer.status === "error") {
+        this.startHttpDownload(transfer); // sẽ dùng Range nếu có bytesReceived
       }
     }
-    this.renderTransfers();
   }
 
   stopTransfer(transfer) {
@@ -850,7 +961,14 @@ class FlexTransferHub {
       // Thử start các pending khác
       this.maybeStartNextUploads();
     } else {
-      // For downloads (simulated)
+      // For downloads (real)
+      transfer.status = "stopped";
+      if (transfer.controller) {
+        try {
+          transfer.controller.abort();
+        } catch {}
+      }
+      // Xoá khỏi UI
       const index = this.transfers.findIndex((t) => t.id === transfer.id);
       if (index > -1) {
         this.transfers.splice(index, 1);
