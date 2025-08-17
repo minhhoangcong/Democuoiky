@@ -109,7 +109,7 @@ class FlexTransferHub {
         if (!transfer) return;
         transfer.status = "active";
         transfer.bytesSent = msg.offset || 0;
-        this.uploadLoop(transfer);
+        this.runUploadLoopOnce(transfer);
       }
       if (msg.event === "progress") {
         if (!transfer) return;
@@ -128,7 +128,7 @@ class FlexTransferHub {
       if (msg.event === "offset-mismatch") {
         if (!transfer) return;
         transfer.bytesSent = msg.expected || 0;
-        if (transfer.status === "active") this.uploadLoop(transfer);
+        if (transfer.status === "active") this.runUploadLoopOnce(transfer);
       }
       if (msg.event === "paused") {
         if (!transfer) return;
@@ -147,7 +147,7 @@ class FlexTransferHub {
         if (!transfer) return;
         transfer.status = "active";
         transfer.bytesSent = msg.offset || transfer.bytesSent || 0;
-        this.uploadLoop(transfer);
+        this.runUploadLoopOnce(transfer);
       }
       if (msg.event === "stop-ack") {
         // Transfer có thể đã bị xóa từ UI, chỉ cần log
@@ -239,7 +239,7 @@ class FlexTransferHub {
         (transfer.bytesSent / Math.max(transfer.size, 1)) * 100
       );
       transfer.speed = this.formatSpeed(
-        this.computeInstantSpeed(transfer, end - start)
+        this.computeInstantSpeed(transfer, transfer.bytesSent)
       );
 
       // Throttled render để tránh lag
@@ -258,6 +258,19 @@ class FlexTransferHub {
       this.send({ action: "complete", fileId: transfer.id });
     }
   }
+  // Chỉ chạy 1 vòng uploadLoop tại 1 thời điểm cho mỗi transfer
+  runUploadLoopOnce(transfer) {
+    if (!transfer) return;
+    if (transfer._uplRunning) return; // đã chạy rồi thì thôi
+    transfer._uplRunning = true;
+    (async () => {
+      try {
+        await this.uploadLoop(transfer);
+      } finally {
+        transfer._uplRunning = false; // kết thúc mới cho chạy lại
+      }
+    })();
+  }
 
   arrayBufferToBase64(buffer) {
     const bytes = new Uint8Array(buffer);
@@ -269,22 +282,28 @@ class FlexTransferHub {
     return btoa(binary);
   }
 
-  computeInstantSpeed(transfer, justSentBytes = 0) {
+  computeInstantSpeed(transfer, currentBytes = null) {
     const now = performance.now();
-    const elapsedMs = now - (transfer.lastTickAt || now);
-    const bytesDelta =
-      transfer.bytesSent - (transfer.lastTickBytes || 0) || justSentBytes;
+    const total =
+      currentBytes != null
+        ? currentBytes
+        : transfer.type === "upload"
+        ? transfer.bytesSent
+        : transfer.bytesReceived;
 
+    const lastAt = transfer.lastTickAt || now;
+    const lastBytes =
+      typeof transfer.lastTickBytes === "number" ? transfer.lastTickBytes : 0;
+    const elapsedMs = now - lastAt;
+
+    let bps = transfer.currentSpeedBps || 0;
     if (elapsedMs > 250) {
+      const delta = total - lastBytes;
+      bps = delta > 0 ? (delta * 1000) / elapsedMs : 0;
       transfer.lastTickAt = now;
-      transfer.lastTickBytes = transfer.bytesSent;
+      transfer.lastTickBytes = total;
+      transfer.currentSpeedBps = bps;
     }
-
-    const bps = elapsedMs > 0 ? (bytesDelta * 1000) / elapsedMs : 0;
-
-    // Lưu tốc độ hiện tại vào transfer object để sử dụng sau
-    transfer.currentSpeedBps = bps;
-
     return bps;
   }
 
@@ -501,19 +520,31 @@ class FlexTransferHub {
     transfer.lastTickBytes = transfer.bytesReceived;
     transfer.lastTickAt = performance.now();
 
-    // HEAD để lấy size
-    const head = await fetch(transfer.url, { method: "HEAD" });
-    if (!head.ok) {
-      this.showNotification("Cannot fetch file info (HEAD)", "error");
-      transfer.status = "error";
-      this.renderTransfers();
-      return;
+    // HEAD để lấy size (có thể bị CORS/không hỗ trợ) → nếu lỗi vẫn tiếp tục GET
+    try {
+      const head = await fetch(transfer.url, { method: "HEAD" });
+      if (head.ok) {
+        const len = head.headers.get("content-length");
+        transfer.size = len ? parseInt(len, 10) : 0;
+      } else {
+        // không set error, vẫn cho chạy GET
+        transfer.size = transfer.size || 0;
+      }
+    } catch {
+      transfer.size = transfer.size || 0;
     }
-    const len = head.headers.get("content-length");
-    transfer.size = len ? parseInt(len, 10) : 0;
-
-    // Bắt đầu stream
-    await this.streamHttp(transfer);
+    // Bắt đầu stream (dù HEAD có thành công hay không)
+    this.runDownloadOnce(transfer);
+  }
+  // [MỚI] Chạy 1 vòng tải (dùng lại Range nếu đã có bytesReceived)
+  runDownloadOnce(transfer) {
+    if (transfer._dlRunning) return; // chốt an toàn: tránh chạy trùng
+    transfer._dlRunning = true;
+    this.streamHttp(transfer)
+      .catch(() => {}) // để không văng promise
+      .finally(() => {
+        transfer._dlRunning = false;
+      });
   }
 
   async streamHttp(transfer) {
@@ -563,7 +594,7 @@ class FlexTransferHub {
           ? Math.min(100, (transfer.bytesReceived / transfer.size) * 100)
           : 0;
         transfer.speed = this.formatSpeed(
-          this.computeInstantSpeed(transfer, value.length)
+          this.computeInstantSpeed(transfer, transfer.bytesReceived)
         );
         this.throttledRender();
 
@@ -596,29 +627,6 @@ class FlexTransferHub {
     };
 
     await pump();
-  }
-
-  simulateTransfer(transfer) {
-    transfer.status = "active";
-
-    const interval = setInterval(() => {
-      if (transfer.progress < 100) {
-        transfer.progress += Math.random() * 10;
-        transfer.speed = this.formatSpeed(Math.random() * 1024 * 1024);
-
-        if (transfer.progress >= 100) {
-          transfer.progress = 100;
-          transfer.status = "completed";
-          transfer.speed = "0 KB/s";
-          clearInterval(interval);
-        }
-
-        this.renderTransfers();
-        this.updateStatusCards();
-      } else {
-        clearInterval(interval);
-      }
-    }, 1000);
   }
 
   renderTransfers() {
@@ -887,9 +895,9 @@ class FlexTransferHub {
         this.startUpload(transfer);
       }
     } else {
-      // download thật
-      if (transfer.status === "pending" || transfer.status === "error") {
-        this.startHttpDownload(transfer);
+      // For downloads (real)
+      if (transfer.status === "paused" || transfer.status === "error") {
+        this.runDownloadOnce(transfer); // dùng Range theo bytesReceived hiện có
       }
     }
 
@@ -929,7 +937,7 @@ class FlexTransferHub {
         }
         transfer.status = "active";
         this.send({ action: "resume", fileId: transfer.id });
-        this.uploadLoop(transfer);
+        this.runUploadLoopOnce(transfer);
       } else if (
         transfer.status === "queued" ||
         transfer.status === "pending"
@@ -939,7 +947,7 @@ class FlexTransferHub {
     } else {
       // For downloads (real)
       if (transfer.status === "paused" || transfer.status === "error") {
-        this.startHttpDownload(transfer); // sẽ dùng Range nếu có bytesReceived
+        this.runDownloadOnce(transfer); // dùng Range theo bytesReceived hiện có
       }
     }
   }
@@ -985,11 +993,6 @@ class FlexTransferHub {
     } else if (transfer.status === "paused") {
       this.resumeTransfer(transfer);
     }
-  }
-
-  // Legacy method - keep for backward compatibility
-  cancelTransfer(transfer) {
-    this.stopTransfer(transfer);
   }
 
   generateId() {
