@@ -14,27 +14,43 @@ from logger import setup_logger
 from aiohttp import web
 from pathlib import Path
 from server import UPLOADS_DIR  # tái dùng thư mục uploads
+# CORS helper
+from aiohttp import web  # (đã có)
+def add_cors_headers(resp):
+    resp.headers['Access-Control-Allow-Origin'] = '*'
+    resp.headers['Access-Control-Allow-Methods'] = 'GET, HEAD, OPTIONS'
+    resp.headers['Access-Control-Allow-Headers'] = 'Range, Content-Type'
+    resp.headers['Access-Control-Expose-Headers'] = (
+        'Accept-Ranges, Content-Range, Content-Length, Content-Type'
+    )
+    return resp
+
+async def http_options(request):
+    resp = web.Response(status=204)
+    return add_cors_headers(resp)
 
 async def http_head(request):
     name = request.match_info['name']
     p = (UPLOADS_DIR / name)
     if not p.exists():
-        return web.Response(status=404)
+        return add_cors_headers(web.Response(status=404))
     resp = web.Response(status=200)
     resp.content_length = p.stat().st_size
     resp.headers['Accept-Ranges'] = 'bytes'
-    return resp
+    return add_cors_headers(resp)
+
 
 async def http_get(request):
     name = request.match_info['name']
     p = (UPLOADS_DIR / name)
     if not p.exists():
-        return web.Response(status=404)
+        return add_cors_headers(web.Response(status=404))
 
     size = p.stat().st_size
     rng = request.headers.get('Range')
     start, end = 0, size - 1
     status = 200
+    length = size
     headers = {'Accept-Ranges': 'bytes', 'Content-Type': 'application/octet-stream'}
 
     if rng and rng.startswith('bytes='):
@@ -42,9 +58,12 @@ async def http_get(request):
         if a: start = int(a)
         if b: end = int(b) if b else end
         status = 206
+        length = end - start + 1
         headers['Content-Range'] = f'bytes {start}-{end}/{size}'
+    headers['Content-Length'] = str(length)
 
     resp = web.StreamResponse(status=status, headers=headers)
+    add_cors_headers(resp)                # <-- thêm CORS trước khi prepare
     await resp.prepare(request)
 
     chunk_size = 64 * 1024
@@ -61,10 +80,12 @@ async def http_get(request):
     await resp.write_eof()
     return resp
 
+
 async def run_http(host: str, port: int):
     app = web.Application()
     app.router.add_head('/files/{name}', http_head)
     app.router.add_get('/files/{name}', http_get)
+    app.router.add_options('/files/{name}', http_options) 
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, host, port)

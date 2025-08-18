@@ -5,9 +5,9 @@ class FlexTransferHub {
     this.activeTab = "all";
     this.ws = null;
     this.wsUrl = window.FLEX_WS_URL || "ws://localhost:8765/ws";
-    this.chunkSize = 64 * 1024; // 64KB
+    this.chunkSize = 256 * 1024;
     this.lastRenderTime = 0;
-    this.renderThrottle = 100; // 100ms throttle
+    this.renderThrottle = 150;
     this.maxConcurrentUploads = 2; // Giới hạn số upload đồng thời
     this.init();
   }
@@ -125,6 +125,15 @@ class FlexTransferHub {
         // Sử dụng throttled render để tránh lag
         this.throttledRender();
       }
+      // Nếu đang đợi ACK cho chunk vừa gửi, và offset đã >= điểm kỳ vọng → gỡ chờ
+      if (transfer && transfer._ackResolver && transfer._ackOffset) {
+        if (msg.offset >= transfer._ackOffset) {
+          transfer._ackResolver();
+          transfer._ackResolver = null;
+          transfer._ackOffset = 0;
+        }
+      }
+
       if (msg.event === "offset-mismatch") {
         if (!transfer) return;
         transfer.bytesSent = msg.expected || 0;
@@ -224,13 +233,30 @@ class FlexTransferHub {
       const buffer = await slice.arrayBuffer();
       const base64 = this.arrayBufferToBase64(buffer);
 
-      // Send chunk
+      // Phanh backpressure: tránh “dồn” WS khiến pause/stop tới chậm
+      while (this.ws && this.ws.bufferedAmount > 4 * 1024 * 1024) {
+        // 4MB buffer
+        await new Promise((r) => setTimeout(r, 10)); // nhả event loop 10ms
+        // Nếu người dùng vừa pause/stop thì dừng vòng lặp ngay
+        if (transfer.status !== "active") return;
+      }
+
+      // Gửi chunk
       this.send({
         action: "chunk",
         fileId: transfer.id,
         offset: start,
         data: base64,
       });
+      // Đặt “điểm kỳ vọng” = byte sau khi gửi chunk này
+      transfer._ackOffset = end;
+      transfer._ackPromise = new Promise(
+        (res) => (transfer._ackResolver = res)
+      );
+
+      // Chờ server ACK (progress có offset >= _ackOffset)
+      await transfer._ackPromise;
+      if (transfer.status !== "active") return;
 
       // Update progress
       transfer.bytesSent = end;
@@ -477,28 +503,34 @@ class FlexTransferHub {
 
   addDownloadURL() {
     const urlInput = document.getElementById("download-url");
-    const url = urlInput.value.trim();
-
-    if (!url) {
-      this.showNotification("Please enter a valid URL", "error");
+    const rawUrl = urlInput.value.trim();
+    if (!rawUrl) {
+      this.showNotification("Vui lòng nhập URL", "error");
       return;
     }
 
-    if (!this.isValidURL(url)) {
-      this.showNotification("Please enter a valid URL format", "error");
+    let normalized;
+    try {
+      normalized = new URL(rawUrl, window.location.origin).toString();
+    } catch (e) {
+      this.showNotification("URL không hợp lệ", "error");
       return;
     }
+
+    // NEW: tên file hiển thị = phần cuối path, bỏ query, và decode cho đẹp
+    const lastSeg = normalized.split("/").pop() || "";
+    const prettyName = decodeURIComponent(lastSeg.split("?")[0]) || "download";
 
     const transfer = {
       id: this.generateId(),
-      name: this.extractFileName(url),
+      name: this.extractFileName(normalized),
       size: 0,
       type: "download",
       status: "pending",
       progress: 0,
       speed: "0 KB/s",
       startTime: Date.now(),
-      url: url,
+      url: normalized,
     };
 
     this.transfers.push(transfer);
@@ -508,7 +540,7 @@ class FlexTransferHub {
     urlInput.value = "";
     this.updateStatusCards();
     this.renderTransfers();
-    this.showNotification("Download added to queue", "success");
+    this.showNotification("Đã bắt đầu tải", "success");
   }
   async startHttpDownload(transfer) {
     transfer.type = "download";
@@ -896,8 +928,10 @@ class FlexTransferHub {
       }
     } else {
       // For downloads (real)
-      if (transfer.status === "paused" || transfer.status === "error") {
-        this.runDownloadOnce(transfer); // dùng Range theo bytesReceived hiện có
+      if (transfer.status === "pending") {
+        this.startHttpDownload(transfer); // <-- thêm nhánh pending
+      } else if (transfer.status === "paused" || transfer.status === "error") {
+        this.runDownloadOnce(transfer);
       }
     }
 
@@ -909,6 +943,13 @@ class FlexTransferHub {
       if (transfer.status === "active") {
         transfer.status = "paused";
         this.send({ action: "pause", fileId: transfer.id });
+        // nếu đang đợi ACK thì gỡ để vòng lặp thoát nhanh
+        if (transfer._ackResolver) {
+          transfer._ackResolver();
+          transfer._ackResolver = null;
+          transfer._ackOffset = 0;
+        }
+
         this.maybeStartNextUploads();
       }
     } else {
@@ -958,6 +999,12 @@ class FlexTransferHub {
       transfer.status = "stopped";
       // Gửi lệnh stop đến server
       this.send({ action: "stop", fileId: transfer.id, delete: true });
+      // HỦY CHỜ ACK để không kẹt await khi dừng
+      if (transfer._ackResolver) {
+        transfer._ackResolver();
+        transfer._ackResolver = null;
+        transfer._ackOffset = 0;
+      }
 
       // Cập nhật UI ngay lập tức để tránh delay
       const index = this.transfers.findIndex((t) => t.id === transfer.id);
