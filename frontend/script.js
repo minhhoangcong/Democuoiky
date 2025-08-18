@@ -159,15 +159,8 @@ class FlexTransferHub {
         this.runUploadLoopOnce(transfer);
       }
       if (msg.event === "stop-ack") {
-        // Transfer có thể đã bị xóa từ UI, chỉ cần log
-        if (!transfer) {
-          console.log(
-            "Stop acknowledged for already removed transfer:",
-            fileId
-          );
-          return;
-        }
-        // Remove transfer
+        if (!transfer) return;
+        // Remove transfer khỏi mảng
         const idx = this.transfers.findIndex((t) => t.id === fileId);
         if (idx > -1) this.transfers.splice(idx, 1);
         this.updateStatusCards();
@@ -225,7 +218,6 @@ class FlexTransferHub {
     const file = transfer.file;
     if (!file) return;
 
-    // Loop sending chunks until paused/stopped/completed
     while (transfer.status === "active" && transfer.bytesSent < transfer.size) {
       const start = transfer.bytesSent;
       const end = Math.min(start + this.chunkSize, transfer.size);
@@ -233,32 +225,34 @@ class FlexTransferHub {
       const buffer = await slice.arrayBuffer();
       const base64 = this.arrayBufferToBase64(buffer);
 
-      // Phanh backpressure: tránh “dồn” WS khiến pause/stop tới chậm
+      // TRƯỚC KHI GỬI chunk, kiểm tra trạng thái một lần nữa!
+      if (transfer.status !== "active") return;
+
+      // Backpressure tránh nghẽn WebSocket buffer
       while (this.ws && this.ws.bufferedAmount > 4 * 1024 * 1024) {
-        // 4MB buffer
-        await new Promise((r) => setTimeout(r, 10)); // nhả event loop 10ms
-        // Nếu người dùng vừa pause/stop thì dừng vòng lặp ngay
+        await new Promise((r) => setTimeout(r, 10));
         if (transfer.status !== "active") return;
       }
 
-      // Gửi chunk
+      // Gửi chunk lên server
       this.send({
         action: "chunk",
         fileId: transfer.id,
         offset: start,
         data: base64,
       });
-      // Đặt “điểm kỳ vọng” = byte sau khi gửi chunk này
+
+      // Chờ server ACK (đã gửi đủ offset), nếu pause/stop trong lúc chờ ACK, dừng luôn
       transfer._ackOffset = end;
       transfer._ackPromise = new Promise(
         (res) => (transfer._ackResolver = res)
       );
-
-      // Chờ server ACK (progress có offset >= _ackOffset)
       await transfer._ackPromise;
+
+      // Nếu vừa pause/stop khi chờ ACK → break ngay
       if (transfer.status !== "active") return;
 
-      // Update progress
+      // Update progress, tốc độ
       transfer.bytesSent = end;
       transfer.progress = Math.min(
         100,
@@ -268,22 +262,19 @@ class FlexTransferHub {
         this.computeInstantSpeed(transfer, transfer.bytesSent)
       );
 
-      // Throttled render để tránh lag
       this.throttledRender();
-
-      // Small yield to keep UI responsive
       await new Promise((r) => setTimeout(r, 5));
     }
 
-    // Final render
+    // Sau khi upload xong, gửi complete cho server
     this.renderTransfers();
     this.updateStatusCards();
 
     if (transfer.status === "active" && transfer.bytesSent >= transfer.size) {
-      // Notify server completed
       this.send({ action: "complete", fileId: transfer.id });
     }
   }
+
   // Chỉ chạy 1 vòng uploadLoop tại 1 thời điểm cho mỗi transfer
   runUploadLoopOnce(transfer) {
     if (!transfer) return;
